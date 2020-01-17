@@ -31,9 +31,10 @@ struct option cli_options[] = {
         { "human-readable", no_argument,    NULL,   'H' },
         { "numeric",        no_argument,    NULL,   'n' },
         { "progress",       no_argument,    NULL,   'p' },
+        { "unsorted",       no_argument,    NULL,   'S' },
         { NULL,             0,              NULL,    0  }
     };
-const char *cli_options_str = "hqvHnp";
+const char *cli_options_str = "hqvHnpS";
 
 //
 
@@ -102,6 +103,7 @@ static int              verbosity = 1;
 static bool             should_show_human_readable = false;
 static bool             should_show_numeric_entity_ids = false;
 static bool             should_show_progress = false;
+static bool             should_sort = true;
 
 #ifndef PROGRESS_LIMIT
 #define PROGRESS_LIMIT  8192
@@ -293,20 +295,21 @@ __usage_record_summarize(
 
         // Display this record:
         const char  *name = NULL;
+        double      percentage = 100.0 * (double)root->byte_usage / (double)total_usage;
 
         if ( entity_to_name ) name = entity_to_name(root->entity_id);
 
         if ( should_show_human_readable ) {
             if ( name ) {
-                printf("%20s %24s\n", name, byte_count_to_string(root->byte_usage));
+                printf("%20s %24s (%6.2f%%)\n", name, byte_count_to_string(root->byte_usage), percentage);
             } else {
-                printf("%20d %24s\n", root->entity_id, byte_count_to_string(root->byte_usage));
+                printf("%20d %24s (%6.2f%%)\n", root->entity_id, byte_count_to_string(root->byte_usage), percentage);
             }
         } else {
             if ( name ) {
-                printf("%20s %24llu\n", name, (unsigned long long)root->byte_usage);
+                printf("%20s %24llu (%6.2f%%)\n", name, (unsigned long long)root->byte_usage, percentage);
             } else {
-                printf("%20d %24llu\n", root->entity_id, (unsigned long long)root->byte_usage);
+                printf("%20d %24llu (%6.2f%%)\n", root->entity_id, (unsigned long long)root->byte_usage, percentage);
             }
         }
 
@@ -452,6 +455,7 @@ usage(
             "    --numeric/-n           do not resolve numeric uid/gid to names\n"
             "    --progress/-p          display item-scanned counts as the traversal is\n"
             "                           executing\n"
+            "    --unsorted/-S          do not sort by byte usage before summarizing\n"
             "\n",
             exe
         );
@@ -491,6 +495,10 @@ main(
 
             case 'p':
                 should_show_progress = true;
+                break;
+
+            case 'S':
+                should_sort = false;
                 break;
 
         }
@@ -540,10 +548,23 @@ main(
                    "", (unsigned long long)total_usage
                 );
         }
-        printf("Usage by-user for %s:\n", root_path);
-        usage_tree_summarize(by_uid, tree_by_entity_id);
-        printf("\nUsage by-group for %s:\n", root_path);
-        usage_tree_summarize(by_gid, tree_by_entity_id);
+
+        if ( should_sort ) {
+            if ( is_verbose(verbosity_debug) ) fprintf(stderr, "[DEBUG] Sorting by-uid tree by byte usage\n");
+            usage_tree_sort_by_byte_usage(by_uid);
+            if ( is_verbose(verbosity_debug) ) fprintf(stderr, "[DEBUG] Sorting by-gid tree by byte usage\n");
+            usage_tree_sort_by_byte_usage(by_gid);
+
+            printf("Usage by-user for %s:\n", root_path);
+            usage_tree_summarize(by_uid, tree_by_byte_usage);
+            printf("\nUsage by-group for %s:\n", root_path);
+            usage_tree_summarize(by_gid, tree_by_byte_usage);
+        } else {
+            printf("Usage by-user for %s:\n", root_path);
+            usage_tree_summarize(by_uid, tree_by_entity_id);
+            printf("\nUsage by-group for %s:\n", root_path);
+            usage_tree_summarize(by_gid, tree_by_entity_id);
+        }
 
         // Destroy the summary trees:
         if ( is_verbose(verbosity_debug) ) fprintf(stderr, "[DEBUG] Deallocating by-uid tree\n");
