@@ -1,0 +1,41 @@
+/*
+ * dubug - [du] [b]y [u]ser and [g]roup
+ *
+ * general header inclusions etc.
+ *
+ */
+
+#ifndef __CONFIG_H__
+#define __CONFIG_H__
+
+#define _XOPEN_SOURCE 500
+#define _BSD_SOURCE
+
+#include <ftw.h>
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fts.h>
+
+#include <pwd.h>
+#include <grp.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <strings.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <getopt.h>
+#include <time.h>
+#include <stdarg.h>
+
+#cmakedefine HAVE_MPI
+
+#cmakedefine DUBUG_VERSION "@DUBUG_VERSION@"
+#ifndef DUBUG_VERSION
+# define DUBUG_VERSION "<UNKNOWN-VERSION>"
+#endif
+
+#endif /* __CONFIG_H__ */

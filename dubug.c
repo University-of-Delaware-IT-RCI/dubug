@@ -7,21 +7,18 @@
  *
  */
 
-#define _XOPEN_SOURCE 500
-#include <ftw.h>
-#include <sys/types.h>
-#include <pwd.h>
-#include <grp.h>
-#include <errno.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
-#include <strings.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <getopt.h>
-#include <time.h>
+#include "config.h"
+#include "usage_tree.h"
+#include "byte_count_to_string.h"
+#include "simple_verbose_logging.h"
+#include "fs_path.h"
+#include "work_queue.h"
+
+#ifdef HAVE_MPI
+# include "mpi.h"
+#endif
+
+static const char *dubug_version_string = DUBUG_VERSION;
 
 #ifndef ST_NBLOCKSIZE
 # ifdef S_BLKSIZE
@@ -35,117 +32,36 @@
 
 struct option cli_options[] = {
         { "help",               no_argument,        NULL,   'h' },
+        { "version",            no_argument,        NULL,   'V' },
         { "quiet",              no_argument,        NULL,   'q' },
         { "verbose",            no_argument,        NULL,   'v' },
         { "human-readable",     no_argument,        NULL,   'H' },
-        { "numeric",            no_argument,        NULL,   'n' },
-        { "progress",           no_argument,        NULL,   'p' },
-        { "progress-stride",    required_argument,  NULL,   'l' },
+        { "numeric",            no_argument,        NULL,   'n' },\
         { "unsorted",           no_argument,        NULL,   'S' },
         { "parameter",          required_argument,  NULL,   'P' },
+#ifdef HAVE_MPI
+        { "max-depth",          required_argument,  NULL,   'D' },
+#endif
         { NULL,                 0,                  NULL,    0  }
     };
-const char *cli_options_str = "hqvHnpl:SP:";
+const char *cli_options_str = "hVqvHnSP:"
+#ifdef HAVE_MPI
+                "D:"
+#endif
+;
 
 //
-
-typedef const char* (*entity_id_to_name_fn)(int32_t entity_id);
-
-//
-
-typedef struct usage_record {
-    int32_t     entity_id;
-    uint64_t    byte_usage;
-
-    struct usage_record *left[2], *middle[2], *right[2];
-    struct usage_record *list;
-} usage_record_t;
-
-typedef struct usage_tree {
-    usage_record_t          *as_list;
-    usage_record_t          *by_entity_id_root;
-    usage_record_t          *by_byte_usage_root;
-
-    entity_id_to_name_fn    entity_to_name;
-} usage_tree_t;
-
-typedef enum {
-    tree_by_entity_id = 0,
-    tree_by_byte_usage = 1
-} tree_order_t;
-
-//
-
-enum {
-    verbosity_quiet = 0,
-    verbosity_error = 1,
-    verbosity_warning = 2,
-    verbosity_info = 3,
-    verbosity_debug = 4
-};
-
-enum {
-    parameter_actual = 0,
-    parameter_size = 1,
-    parameter_blocks = 2,
-    parameter_max = 3
-};
-
-const char* parameter_names[] = {
-    "actual",
-    "st_size",
-    "st_blocks",
-    NULL
-};
 
 #ifndef DEFAULT_PROGRESS_STRIDE
 #define DEFAULT_PROGRESS_STRIDE  10000
 #endif
 
-static usage_tree_t     *by_uid = NULL;
-static usage_tree_t     *by_gid = NULL;
-static uint64_t         total_usage = 0;
-static uint64_t         item_count = 0;
-static int              verbosity = 1;
+static usage_tree_ref   by_uid = NULL;
+static usage_tree_ref   by_gid = NULL;
 static bool             should_show_human_readable = false;
 static bool             should_show_numeric_entity_ids = false;
-static bool             should_show_progress = false;
-static uint64_t         progress_stride = DEFAULT_PROGRESS_STRIDE;
 static bool             should_sort = true;
-static unsigned int     parameter = parameter_actual;
-
-
-//
-
-const char*
-byte_count_to_string(
-    uint64_t    bytes
-)
-{
-    static const char* units[] = { "  B", "KiB", "MiB", "GiB", "TiB", "PiB", NULL };
-    static char outbuffer[64];
-
-    float       bytecount = (float)bytes;
-    int         unit = 0;
-
-    while ( bytecount > 1024.0 ) {
-        if ( ! units[unit + 1] ) break;
-        bytecount /= 1024.0;
-        unit++;
-    }
-    snprintf(outbuffer, sizeof(outbuffer), "%.2f %s", bytecount, units[unit]);
-    return outbuffer;
-}
-
-//
-
-bool
-is_verbose(
-    int         level
-)
-{
-    return ( level <= verbosity );
-}
+static unsigned int     parameter = usage_parameter_actual;
 
 //
 
@@ -154,268 +70,8 @@ set_parameter(
     const char      *parameter_name
 )
 {
-    const char*     *P = parameter_names;
-    unsigned int    i = parameter_actual;
-    
-    while ( *P ) {
-        if ( strcasecmp(parameter_name, *P) == 0 ) {
-            parameter = i;
-            return true;
-        }
-        i++;
-        P++;
-    }
-    return false;
-}
-
-//
-
-bool
-set_progress_stride(
-    const char      *progress_stride_str
-)
-{
-    char                    *endptr = NULL;
-    unsigned long long int  value = strtoull(progress_stride_str, &endptr, 0);
-    
-    if ( ! value || (endptr == progress_stride_str) || (*endptr) ) return false;
-    
-    progress_stride = value;
-    return true;
-}
-
-//
-
-usage_tree_t*
-usage_tree_create(
-    entity_id_to_name_fn    entity_to_name
-)
-{
-    usage_tree_t        *new_tree = (usage_tree_t*)malloc(sizeof(usage_tree_t));
-
-    if ( ! new_tree ) {
-        perror("Unable to allocate new usage tree");
-        exit(ENOMEM);
-    }
-    memset(new_tree, 0, sizeof(*new_tree));
-    new_tree->entity_to_name = entity_to_name;
-    return new_tree;
-}
-
-//
-
-void
-usage_tree_destroy(
-    usage_tree_t    *a_tree
-)
-{
-    // Walk the as_list and remove records:
-    usage_record_t  *r = a_tree->as_list;
-
-    while ( r ) {
-        usage_record_t  *next = r->list;
-
-        free((void*)r);
-        r = next;
-    }
-
-    // Remove the tree itself:
-    free((void*)a_tree);
-}
-
-//
-
-usage_record_t*
-__usage_record_create(
-    int32_t         entity_id
-)
-{
-    usage_record_t  *new_record = (usage_record_t*)malloc(sizeof(usage_record_t));
-
-    if ( ! new_record ) {
-        perror("Unable to allocate new usage record");
-        exit(ENOMEM);
-    }
-    memset(new_record, 0, sizeof(*new_record));
-    new_record->entity_id = entity_id;
-    return new_record;
-}
-
-//
-
-usage_record_t*
-usage_tree_lookup(
-    usage_tree_t    *a_tree,
-    int32_t         entity_id
-)
-{
-    usage_record_t  *root_record = a_tree->by_entity_id_root;
-
-    while ( root_record ) {
-        if ( entity_id == root_record->entity_id ) break;
-        if ( entity_id < root_record->entity_id ) root_record = root_record->left[0];
-        root_record = root_record->right[0];
-    }
-    return root_record;
-}
-
-//
-
-usage_record_t*
-usage_tree_lookup_or_add(
-    usage_tree_t    *a_tree,
-    int32_t         entity_id
-)
-{
-    usage_record_t  *root_record = a_tree->by_entity_id_root;
-
-    if ( ! root_record ) {
-        a_tree->by_entity_id_root = __usage_record_create(entity_id);
-        a_tree->as_list = a_tree->by_entity_id_root;
-        return a_tree->by_entity_id_root;
-    }
-    while ( root_record ) {
-        if ( entity_id == root_record->entity_id ) break;
-        else if ( entity_id < root_record->entity_id ) {
-            if ( root_record->left[0] ) {
-                root_record = root_record->left[0];
-            } else {
-                root_record = root_record->left[0] = __usage_record_create(entity_id);
-                root_record->list = a_tree->as_list;
-                a_tree->as_list = root_record;
-                break;
-            }
-        }
-        else if ( root_record->right[0] ) {
-            root_record = root_record->right[0];
-        }
-        else {
-            root_record = root_record->right[0] = __usage_record_create(entity_id);
-            root_record->list = a_tree->as_list;
-            a_tree->as_list = root_record;
-            break;
-        }
-    }
-    return root_record;
-}
-
-//
-
-void
-usage_tree_sort_by_byte_usage(
-    usage_tree_t    *a_tree
-)
-{
-    // We're going to traverse the list of records and add to a secondary tree
-    // based on byte_usage:
-    usage_record_t  *record = a_tree->as_list;
-
-    a_tree->by_byte_usage_root = record;
-    if ( record ) {
-        record = record->list;
-        while ( record ) {
-            usage_record_t  *root = a_tree->by_byte_usage_root;
-
-            while ( root ) {
-                if ( record->byte_usage == root->byte_usage ) {
-                    if ( root->middle[1] ) {
-                        root = root->middle[1];
-                    } else {
-                        root->middle[1] = record;
-                        break;
-                    }
-                }
-                else if ( record->byte_usage > root->byte_usage ) {
-                    if ( root->left[1] ) {
-                        root = root->left[1];
-                    } else {
-                        root->left[1] = record;
-                        break;
-                    }
-                }
-                else if ( root->right[1] ) {
-                    root = root->right[1];
-                } else {
-                    root->right[1] = record;
-                    break;
-                }
-            }
-            record = record->list;
-        }
-    }
-}
-
-//
-
-void
-__usage_record_summarize(
-    usage_record_t          *root,
-    tree_order_t            ordering,
-    entity_id_to_name_fn    entity_to_name
-)
-{
-    if ( root ) {
-        // Go to the left first:
-        if ( root->left[ordering] ) __usage_record_summarize(root->left[ordering], ordering, entity_to_name);
-
-        // Display this record:
-        const char  *name = NULL;
-        double      percentage = 100.0 * (double)root->byte_usage / (double)total_usage;
-
-        if ( entity_to_name ) name = entity_to_name(root->entity_id);
-
-        switch ( parameter ) {
-            case parameter_actual:
-            case parameter_size:
-                if ( should_show_human_readable ) {
-                    if ( name ) {
-                        printf("%20s %24s (%6.2f%%)\n", name, byte_count_to_string(root->byte_usage), percentage);
-                    } else {
-                        printf("%20d %24s (%6.2f%%)\n", root->entity_id, byte_count_to_string(root->byte_usage), percentage);
-                    }
-                } else {
-                    if ( name ) {
-                        printf("%20s %24llu (%6.2f%%)\n", name, (unsigned long long)root->byte_usage, percentage);
-                    } else {
-                        printf("%20d %24llu (%6.2f%%)\n", root->entity_id, (unsigned long long)root->byte_usage, percentage);
-                    }
-                }
-                break;
-            
-            case parameter_blocks:
-                if ( name ) {
-                    printf("%20s %24llu (%6.2f%%)\n", name, (unsigned long long)root->byte_usage, percentage);
-                } else {
-                    printf("%20d %24llu (%6.2f%%)\n", root->entity_id, (unsigned long long)root->byte_usage, percentage);
-                }
-                break;
-        }
-
-        // Go down the middle, too:
-        if ( root->middle[ordering] ) __usage_record_summarize(root->middle[ordering], ordering, entity_to_name);
-
-        // Finally, go to the right:
-        if ( root->right[ordering] ) __usage_record_summarize(root->right[ordering], ordering, entity_to_name);
-    }
-}
-
-void
-usage_tree_summarize(
-    usage_tree_t    *a_tree,
-    tree_order_t    ordering
-)
-{
-    switch ( ordering ) {
-        case tree_by_entity_id:
-            __usage_record_summarize(a_tree->by_entity_id_root, ordering, a_tree->entity_to_name);
-            break;
-        case tree_by_byte_usage:
-            __usage_record_summarize(a_tree->by_byte_usage_root, ordering, a_tree->entity_to_name);
-            break;
-        default:
-            fprintf(stderr, "ERROR:  invalid tree ordering to usage_tree_summarize()\n");
-            exit(EINVAL);
-    }
+    parameter = usage_parameter_from_string(parameter_name);
+    return (parameter != usage_parameter_max);
 }
 
 //
@@ -425,10 +81,13 @@ gid_to_gname(
     int32_t gid
 )
 {
-    struct group    *gentry = getgrgid((gid_t)gid);
-
-    if ( gentry ) return gentry->gr_name;
-    return NULL;
+    struct group    gentry, *gentry_ptr;
+    static char     gentry_str_buffer[1024];
+    
+    if ( getgrgid_r((gid_t)gid, &gentry, gentry_str_buffer, sizeof(gentry_str_buffer), &gentry_ptr) == 0 ) {
+        if ( gentry_ptr ) return gentry_ptr->gr_name;
+    }
+    return "<unknown>";
 }
 
 //
@@ -438,109 +97,13 @@ uid_to_uname(
     int32_t uid
 )
 {
-    struct passwd   *uentry = getpwuid((uid_t)uid);
-
-    if ( uentry ) return uentry->pw_name;
-    return NULL;
-}
-
-//
-
-int
-nftw_callback(
-    const char          *fpath,
-    const struct stat   *finfo,
-    int                 typeflag,
-    struct FTW          *ftw_info
-)
-{
-    usage_record_t      *r;
-
-    if ( typeflag == FTW_DNR ) {
-        if ( is_verbose(verbosity_warning) ) fprintf(stderr, "[WARNING] cannot descend into directory: %s\n", fpath);
-        return 0;
-    }
-    if ( typeflag == FTW_NS ) {
-        if ( is_verbose(verbosity_warning) ) fprintf(stderr, "[WARNING] unresolvable symlink: %s\n", fpath);
-        return 0;
-    }
-
-    if ( is_verbose(verbosity_debug) && typeflag == FTW_D ) fprintf(stderr, "[DEBUG] %s\n", fpath);
+    struct passwd   uentry, *uentry_ptr;
+    static char     uentry_str_buffer[1024];
     
-    uint64_t        size;
-    
-    switch ( parameter ) {
-        case parameter_actual:
-            size = finfo->st_blocks * ST_NBLOCKSIZE;
-            break;
-        case parameter_size:
-            size = finfo->st_size;
-            break;
-        case parameter_blocks:
-            size = finfo->st_blocks;
-            break;
+    if ( getpwuid_r((uid_t)uid, &uentry, uentry_str_buffer, sizeof(uentry_str_buffer), &uentry_ptr) == 0 ) {
+        if ( uentry_ptr ) return uentry_ptr->pw_name;
     }
-    total_usage += size;
-    item_count++;
-    r = usage_tree_lookup_or_add(by_uid, finfo->st_uid);
-    if ( r ) r->byte_usage += size;
-    r = usage_tree_lookup_or_add(by_gid, finfo->st_gid);
-    if ( r ) r->byte_usage += size;
-
-    return 0;
-}
-
-//
-
-int
-nftw_progress_callback(
-    const char          *fpath,
-    const struct stat   *finfo,
-    int                 typeflag,
-    struct FTW          *ftw_info
-)
-{
-    usage_record_t      *r;
-
-    if ( typeflag == FTW_DNR ) {
-        if ( is_verbose(verbosity_warning) ) fprintf(stderr, "[WARNING] cannot descend into directory: %s\n", fpath);
-        return 0;
-    }
-    if ( typeflag == FTW_NS ) {
-        if ( is_verbose(verbosity_warning) ) fprintf(stderr, "[WARNING] unresolvable symlink: %s\n", fpath);
-        return 0;
-    }
-
-    if ( is_verbose(verbosity_debug) && typeflag == FTW_D ) fprintf(stderr, "[DEBUG] %s\n", fpath);
-    
-    uint64_t        size;
-    
-    switch ( parameter ) {
-        case parameter_actual:
-            size = finfo->st_blocks * ST_NBLOCKSIZE;
-            break;
-        case parameter_size:
-            size = finfo->st_size;
-            break;
-        case parameter_blocks:
-            size = finfo->st_blocks;
-            break;
-    }
-    total_usage += size;
-    item_count++;
-    r = usage_tree_lookup_or_add(by_uid, finfo->st_uid);
-    if ( r ) r->byte_usage += size;
-    r = usage_tree_lookup_or_add(by_gid, finfo->st_gid);
-    if ( r ) r->byte_usage += size;
-
-    if ( (item_count % progress_stride) == 0 ) {
-        if ( is_verbose(verbosity_info) ) {
-            fprintf(stderr, "[INFO]   %12llu items scanned...\n", (unsigned long long)item_count);
-        } else {
-            printf("... %llu items scanned...\n", (unsigned long long)item_count);
-        }
-    }
-    return 0;
+    return "<unknown>";
 }
 
 //
@@ -551,31 +114,65 @@ usage(
 )
 {
     printf(
+#ifdef HAVE_MPI
+            "usage -- [du] [b]y [u]ser and [g]roup (with MPI parallelism)\n\n"
+#else
             "usage -- [du] [b]y [u]ser and [g]roup\n\n"
+#endif
             "    %s {options} <path> {<path> ..}\n\n"
             "  options:\n\n"
             "    --help/-h                show this help info\n"
+            "    --version/-V             show the program version\n"
             "    --verbose/-v             increase amount of output shown during execution\n"
             "    --quiet/-q               decrease amount of output shown during execution\n"
             "    --human-readable/-H      display usage with units, not as bytes\n"
             "    --numeric/-n             do not resolve numeric uid/gid to names\n"
-            "    --progress/-p            display item-scanned counts as the traversal is\n"
-            "                             executing\n"
-            "    --progress-stride/-l #   display progress every # items processed\n"
-            "                             (default: %llu)\n"
             "    --unsorted/-S            do not sort by byte usage before summarizing\n"
-            "    --parameter/-P <param>   sizing field over which to sum:\n\n"
-            "                                 actual      bytes on disk (the default)\n"
-            "                                 size        nominal size (possibly sparse)\n"
-            "                                 blocks      block count\n"
+            "    --parameter/-P <param>   sizing field over which to sum:\n"
             "\n"
+            "                                 actual      bytes on disk (the default)\n"
+            "                                 st_size     nominal size (possibly sparse)\n"
+            "                                 st_blocks   block count\n"
+            "\n"
+#ifdef HAVE_MPI
+            "  parallel options:\n\n"
+            "    --max-depth/-D #         maximum depth to descend to produce distributed\n"
+            "                             workload\n"
+            "\n"
+#endif
             "  <path> can be an absolute or relative file system path to a directory or\n"
             "  file (not very interesting), and for each <path> the traversal is repeated\n"
             "  (rather than aggregating the sum over the paths).\n"
             "\n",
             exe,
-            (unsigned long long int)DEFAULT_PROGRESS_STRIDE            
+            (unsigned long long int)DEFAULT_PROGRESS_STRIDE
         );
+}
+
+//
+
+void
+version(
+    const char   *exe
+)
+{
+    const char  *basename = exe, *slash = NULL;
+
+    // Isolate the program basename:
+    while ( *basename ) {
+        if ( *basename == '/' ) slash = basename;
+        basename++;
+    }
+    printf(
+        "%s version %s"
+#ifdef HAVE_MPI
+        " (mpi parallelism)"
+#endif
+        "\n"
+        ,
+        ( slash ? (slash + 1) : exe ),
+        dubug_version_string
+      );
 }
 
 //
@@ -587,19 +184,54 @@ main(
 )
 {
     int             opt, rc = 0;
+#ifdef HAVE_MPI
+    int             thread_mode, mpi_rank, mpi_size;
+    
+    rc = MPI_Init_thread(&argc, &argv, MPI_THREAD_SERIALIZED, &thread_mode);
+    if ( rc != MPI_SUCCESS ) {
+        svl_printf(verbosity_critical, "unable to initialize MPI (rc = %d)", rc);
+        exit(1);
+    }
+    rc = MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    if ( rc != MPI_SUCCESS ) {
+        svl_printf(verbosity_critical, "unable to determine MPI rank (rc = %d)", rc);
+        MPI_Finalize();
+        exit(1);
+    }
+    rc = MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if ( rc != MPI_SUCCESS ) {
+        svl_printf(verbosity_critical, "unable to determine MPI size (rc = %d)", rc);
+        MPI_Finalize();
+        exit(1);
+    }
+#endif
 
     while ( (opt = getopt_long(argc, argv, cli_options_str, cli_options, NULL)) != -1 ) {
         switch ( opt ) {
             case 'h':
+#ifdef HAVE_MPI
+                if ( mpi_rank == 0 ) usage(argv[0]);
+                MPI_Finalize();
+#else
                 usage(argv[0]);
+#endif
+                exit(0);
+
+            case 'V':
+#ifdef HAVE_MPI
+                if ( mpi_rank == 0 ) version(argv[0]);
+                MPI_Finalize();
+#else
+                version(argv[0]);
+#endif
                 exit(0);
 
             case 'q':
-                verbosity--;
+                svl_dec_verbosity();
                 break;
 
             case 'v':
-                verbosity++;
+                svl_inc_verbosity();
                 break;
 
             case 'H':
@@ -610,24 +242,13 @@ main(
                 should_show_numeric_entity_ids = true;
                 break;
 
-            case 'p':
-                should_show_progress = true;
-                break;
-            
-            case 'l':
-                if ( ! set_progress_stride(optarg) ) {
-                    if ( is_verbose(verbosity_error) ) fprintf(stderr, "[ERROR] Invalid argument to --progress-stride/-l: %s\n", optarg);
-                    exit(EINVAL);
-                }
-                break;
-
             case 'S':
                 should_sort = false;
                 break;
             
             case 'P':
                 if ( ! set_parameter(optarg) ) {
-                    if ( is_verbose(verbosity_error) ) fprintf(stderr, "[ERROR] Invalid argument to --parameter/-P: %s\n", optarg);
+                    svl_printf(verbosity_error, "Invalid argument to --parameter/-P: %s", optarg);
                     exit(EINVAL);
                 }
                 break;
@@ -635,90 +256,221 @@ main(
         }
     }
 
+#ifdef HAVE_MPI
+    svl_printf(verbosity_info, "MPI rank %d of %d initialized", mpi_rank, mpi_size);
+#endif
+
     // Increase our nice level (lowest priority possible, please):
     if ( geteuid() != 0 ) nice(999);
 
     while ( (rc == 0) && (optind < argc) ) {
-        const char      *root_path = argv[optind];
-        struct timespec start_time, end_time;
-
-        // Initialize the two summary trees:
-        if ( is_verbose(verbosity_debug) ) fprintf(stderr, "[DEBUG] Allocating by-uid tree\n");
-        by_uid = usage_tree_create(should_show_numeric_entity_ids ? NULL : uid_to_uname);
-
-        if ( is_verbose(verbosity_debug) ) fprintf(stderr, "[DEBUG] Allocating by-gid tree\n");
-        by_gid = usage_tree_create(should_show_numeric_entity_ids ? NULL : gid_to_gname);
-
-        // Initialize global counters, too:
-        total_usage = 0;
-        item_count = 0;
-
-        // Walk the directory hierarchy:
-        if ( is_verbose(verbosity_info) ) fprintf(stderr, "[INFO] Starting traversal of %s\n", root_path);
-        clock_gettime(CLOCK_BOOTTIME, &start_time);
-        rc = nftw(root_path, (should_show_progress ? nftw_progress_callback : nftw_callback), 100, FTW_MOUNT | FTW_PHYS);
-        clock_gettime(CLOCK_BOOTTIME, &end_time);
-        if ( is_verbose(verbosity_info) ) {
-            double      seconds = (end_time.tv_sec - start_time.tv_sec) + 1e-9 * (end_time.tv_nsec - start_time.tv_nsec);
-
-            fprintf(stderr, "[INFO] Completed traversal of %s\n", root_path);
-            fprintf(stderr, "[INFO]   %llu files/directories in %.3f seconds\n", (unsigned long long int)item_count, seconds);
-            fprintf(stderr, "[INFO]   %12.0f files/directories per second\n", (double)item_count / seconds);
-        }
-        if ( is_verbose(verbosity_error) && (rc != 0) ) fprintf(stderr, "[ERROR] Directory walk exited early due to internal failure\n");
-
-        // Sumarize:
-        printf("Total usage:\n");
-        switch ( parameter ) {
+        unsigned int    usage_options = (should_show_human_readable ? usage_option_human_readable : 0);
+        work_queue_ref  wqueue = work_queue_alloc(parameter);
+        fs_path_ref     root = fs_path_alloc_with_cstring_const(argv[optind]);
         
-            case parameter_actual:
-            case parameter_size:
-                if ( should_show_human_readable ) {
-                    printf(
-                           "%20s %24s\n",
-                           "", byte_count_to_string(total_usage)
-                        );
-                } else {
-                    printf(
-                           "%20s %24llu\n",
-                           "", (unsigned long long)total_usage
-                        );
-                }
-                break;
+        if ( wqueue && root ) {
+            // Initialize the work queue:
+            struct timespec start_time, end_time;
+            bool            is_okay = true;
+            usage_tree_ref  by_uid, by_gid;
             
-            case parameter_blocks:
-                printf(
-                       "%20s %24llu\n",
-                       "", (unsigned long long)total_usage
-                    );
-                break;
-        }
-        if ( should_sort ) {
-            if ( is_verbose(verbosity_debug) ) fprintf(stderr, "[DEBUG] Sorting by-uid tree by byte usage\n");
-            usage_tree_sort_by_byte_usage(by_uid);
-            if ( is_verbose(verbosity_debug) ) fprintf(stderr, "[DEBUG] Sorting by-gid tree by byte usage\n");
-            usage_tree_sort_by_byte_usage(by_gid);
+            clock_gettime(CLOCK_BOOTTIME, &start_time);
 
-            printf("Usage by-user for %s:\n", root_path);
-            usage_tree_summarize(by_uid, tree_by_byte_usage);
-            printf("\nUsage by-group for %s:\n", root_path);
-            usage_tree_summarize(by_gid, tree_by_byte_usage);
-        } else {
-            printf("Usage by-user for %s:\n", root_path);
-            usage_tree_summarize(by_uid, tree_by_entity_id);
-            printf("\nUsage by-group for %s:\n", root_path);
-            usage_tree_summarize(by_gid, tree_by_entity_id);
-        }
+#ifdef HAVE_MPI
+            if ( mpi_rank == 0 ) {
+                svl_printf(verbosity_info, "Building work queue from path %s", argv[optind]);
+                is_okay = work_queue_build(wqueue, root, mpi_size);
+                if ( is_okay ) {
+                    unsigned int    queue_depth = work_queue_get_path_count(wqueue);
+                    unsigned int    base_paths_per_rank = queue_depth / mpi_size;
+                    unsigned int    n_ranks_extra_path = queue_depth % mpi_size;
+                    unsigned int    queue_idx = 0;
+                    int             target_rank = 1;
+                    
+                    svl_printf(verbosity_info, "- Initial work queue of size %u generated", queue_depth);
+                    if ( n_ranks_extra_path == 0 ) {
+                        svl_printf(verbosity_info, "- Each rank will handle %u paths", base_paths_per_rank);
+                    } else {
+                        svl_printf(verbosity_info, "- Each rank will handle at least %u paths", base_paths_per_rank);
+                        svl_printf(verbosity_info, "- %u rank%s will handle an extra path", n_ranks_extra_path, (n_ranks_extra_path == 1) ? "" : "s");
+                    }
+                    
+                    if ( mpi_size > 1 ) {
+                        // We will distribute work to all other ranks first, leaving the root
+                        // rank for last.  If we run out of work then some ranks will have nothing to
+                        // do -- including the root rank:
+                        while ( (queue_idx < queue_depth) && (target_rank < mpi_size) ) {
+                            unsigned int    queue_count = base_paths_per_rank + (mpi_rank < n_ranks_extra_path);
+                            sbb_ref         serialized_queue = work_queue_serialize_range(wqueue, queue_idx, queue_count);
+                            if ( serialized_queue ) {
+                                uint64_t    serialized_queue_len = sbb_get_length(serialized_queue);
+                                
+                                svl_printf(verbosity_debug, "Sending work queue size %llu to rank %d", serialized_queue_len, target_rank);
+                                MPI_Send(&serialized_queue_len, 1, MPI_UINT64_T, target_rank, 10, MPI_COMM_WORLD);
+                                MPI_Send(sbb_get_buffer_ptr(serialized_queue), serialized_queue_len, MPI_UINT8_T, target_rank, 11, MPI_COMM_WORLD);
+                                sbb_free(serialized_queue);
+                                target_rank++;
+                            }
+                            queue_idx += queue_count;
+                        }
+                        
+                        // Remove all paths that have been distributed:
+                        work_queue_delete(wqueue, 0, queue_idx);
+                        
+                        // Any remaining ranks should be told they have nothing to do:
+                        while ( target_rank < mpi_size ) {
+                            uint64_t    serialized_queue_len = 0;
+                            svl_printf(verbosity_debug, "Sending non-work to rank %d", target_rank);
+                            MPI_Send(&serialized_queue_len, 1, MPI_UINT64_T, target_rank++, 10, MPI_COMM_WORLD);
+                        }
+                    }
+                    
+                    // If there's anything left in the work queue, handle that now:
+                    svl_printf(verbosity_debug, "Starting traversal of work queue");
+                    work_queue_complete(wqueue);
+                    svl_printf(verbosity_info, "Completed work queue");
+                    
+                    // Gather results from everyone else:
+                    MPI_Barrier(MPI_COMM_WORLD);
+                    svl_printf(verbosity_debug, "Reducing over uid usage");
+                    usage_tree_reduce(work_queue_get_by_uid_usage_tree(wqueue), 0);
+                    svl_printf(verbosity_debug, "Reducing over gid usage");
+                    usage_tree_reduce(work_queue_get_by_gid_usage_tree(wqueue), 0);
+                }
+                clock_gettime(CLOCK_BOOTTIME, &end_time);
+            } else {
+                uint64_t        serialized_queue_len;
+                
+                
+                // Try to receive the serialized work queue size:
+                svl_printf(verbosity_debug, "Receiving work queue size");
+                MPI_Recv(&serialized_queue_len, 1, MPI_UINT64_T, 0, 10, MPI_COMM_WORLD, NULL);
+                svl_printf(verbosity_debug, "Received size %llu", serialized_queue_len);
+                if ( serialized_queue_len > 0 ) {
+                    sbb_ref     serialized_queue = sbb_alloc(serialized_queue_len, sbb_options_byte_swap);
+                    
+                    sbb_set_length(serialized_queue, serialized_queue_len, 0);
+                    svl_printf(verbosity_debug, "Receiving work queue");
+                    MPI_Recv((void*)sbb_get_buffer_ptr(serialized_queue), serialized_queue_len, MPI_UINT8_T, 0, 11, MPI_COMM_WORLD, NULL);
+                    svl_printf(verbosity_debug, "Received work queue");
+                    sbb_summary(serialized_queue);
+                    
+                    // We don't need the existing work queue:
+                    work_queue_free(wqueue);
+                    wqueue = work_queue_alloc_deserialize(serialized_queue);
+                    if ( wqueue ) {
+                        unsigned int    queue_depth = work_queue_get_path_count(wqueue);
+                        
+                        svl_printf(verbosity_debug, "Received work queue is %u path(s)", queue_depth);
+                    }
+                }
 
-        // Destroy the summary trees:
-        if ( is_verbose(verbosity_debug) ) fprintf(stderr, "[DEBUG] Deallocating by-uid tree\n");
-        usage_tree_destroy(by_uid);
-        if ( is_verbose(verbosity_debug) ) fprintf(stderr, "[DEBUG] Deallocating by-gid tree\n");
-        usage_tree_destroy(by_gid);
+                // Handle the work queue now; if the parent didn't hand us anything then we have
+                // an empty wqueue that was created at the start of this program block:
+                svl_printf(verbosity_debug, "Starting traversal of work queue");
+                work_queue_complete(wqueue);
+                svl_printf(verbosity_info, "Completed work queue");
+                
+                // Send results to root:
+                MPI_Barrier(MPI_COMM_WORLD);
+                svl_printf(verbosity_debug, "Reducing over uid usage");
+                usage_tree_reduce(work_queue_get_by_uid_usage_tree(wqueue), 0);
+                svl_printf(verbosity_debug, "Reducing over gid usage");
+                usage_tree_reduce(work_queue_get_by_gid_usage_tree(wqueue), 0);
+            }
+            if ( is_okay && (mpi_rank == 0) ) {
+#else
+            is_okay = work_queue_build(wqueue, root, 1);
+            
+            if ( is_okay ) {
+                svl_printf(verbosity_info, "Starting traversal of work queue");
+                work_queue_complete(wqueue);
+                svl_printf(verbosity_info, "Completed work queue");
+                
+                clock_gettime(CLOCK_BOOTTIME, &end_time);
+#endif
+
+                // Calculate totals on the two trees:
+                usage_tree_calculate_totals((by_uid = work_queue_get_by_uid_usage_tree(wqueue)));
+                usage_tree_calculate_totals((by_gid = work_queue_get_by_gid_usage_tree(wqueue)));
+        
+                // Temporal summary?
+                if ( svl_is_verbosity(verbosity_info) ) {
+                    double      seconds = (end_time.tv_sec - start_time.tv_sec) + 1e-9 * (end_time.tv_nsec - start_time.tv_nsec);
+                    uint64_t    total_inodes = usage_tree_get_total_inodes(by_uid);
+            
+                    svl_printf(verbosity_info, "Completed traversal of %s", argv[optind]);
+                    svl_printf(verbosity_info, "  %llu files/directories in %.3f seconds", (unsigned long long int)total_inodes, seconds);
+                    svl_printf(verbosity_info, "  %12.0f files/directories per second", (double)total_inodes / seconds);
+                }
+            
+                // Sumarize:
+                printf("Total usage:\n");
+                switch ( parameter ) {
+        
+                    case usage_parameter_actual:
+                    case usage_parameter_size: {
+                        uint64_t    total_bytes = usage_tree_get_total_bytes(by_uid);
+                
+                        if ( should_show_human_readable ) {
+                            printf(
+                                   "%20s %24s\n",
+                                   "", byte_count_to_string(total_bytes)
+                                );
+                        } else {
+                            printf(
+                                   "%20s %24llu\n",
+                                   "", (unsigned long long)total_bytes
+                                );
+                        }
+                        break;
+                    }
+            
+                    case usage_parameter_blocks: {
+                        uint64_t    total_bytes = usage_tree_get_total_bytes(by_uid);
+                
+                        printf(
+                               "%20s %24llu\n",
+                               "", (unsigned long long)total_bytes
+                            );
+                        break;
+                    }
+                }
+                if ( should_sort ) {
+                    svl_printf(verbosity_debug, "Sorting by-uid tree by byte usage");
+                    usage_tree_sort(by_uid);
+                    svl_printf(verbosity_debug, "Sorting by-gid tree by byte usage\n");
+                    usage_tree_sort(by_gid);
+
+                    printf("Usage by-user for %s:\n", argv[optind]);
+                    usage_tree_summarize(by_uid, (should_show_numeric_entity_ids ? NULL : uid_to_uname), tree_by_byte_usage, usage_options, parameter);
+                    printf("\nUsage by-group for %s:\n", argv[optind]);
+                    usage_tree_summarize(by_gid, (should_show_numeric_entity_ids ? NULL : gid_to_gname), tree_by_byte_usage, usage_options, parameter);
+                } else {
+                    printf("Usage by-user for %s:\n", argv[optind]);
+                    usage_tree_summarize(by_uid, (should_show_numeric_entity_ids ? NULL : uid_to_uname), tree_by_entity_id, usage_options, parameter);
+                    printf("\nUsage by-group for %s:\n", argv[optind]);
+                    usage_tree_summarize(by_gid, (should_show_numeric_entity_ids ? NULL : gid_to_gname), tree_by_entity_id, usage_options, parameter);
+                }
+            }
+        }
+        if ( root ) fs_path_free(root);
+        if ( wqueue ) work_queue_free(wqueue);
+
+#ifdef HAVE_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+        if ( mpi_rank == 0 ) printf("\n");
+#else
+        printf("\n");
+#endif
 
         // Move on to the next path to scan:
         optind++;
-        if ( optind < argc ) printf("\n");
     }
+
+#ifdef HAVE_MPI
+    MPI_Finalize();
+#endif
+
     return rc;
 }
