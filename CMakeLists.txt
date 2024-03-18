@@ -15,7 +15,7 @@ endif ()
 
 option(ENABLE_SBB_TEST "Enable compile of sbb_test program" OFF)
 option(ENABLE_FS_PATH_TEST "Enable compile of fs_path_test program" OFF)
-option(ENABLE_WORK_QUEUE_TEST "Enable compile of work_queue_test program" ON)
+option(ENABLE_WORK_QUEUE_TEST "Enable compile of work_queue_test program" OFF)
 
 add_executable(dubug
         byte_count_to_string.c

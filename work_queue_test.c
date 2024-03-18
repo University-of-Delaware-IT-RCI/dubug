@@ -41,7 +41,7 @@ main(
         int             queue_depth = strtol(argv[argn++], NULL, 10);
         fs_path_ref     root = fs_path_alloc_with_cstring_const(argv[argn]);
         
-        if ( work_queue_build(wq, root, queue_depth) ) {
+        if ( work_queue_build(wq, root, work_queue_build_by_path_count, queue_depth) ) {
             printf("Work queue of minimum size %d generated for %s:\n", queue_depth, argv[argn]);
             work_queue_summary(wq);
             

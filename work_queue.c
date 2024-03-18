@@ -268,7 +268,6 @@ work_queue_delete(
 
 //
 
-<<<<<<< HEAD
 void
 work_queue_filter(
     work_queue_ref          wqueue,
@@ -298,13 +297,10 @@ work_queue_filter(
 
 //
 
-=======
->>>>>>> 374ad3da638feb4cfd5fe549b1095b61767b1d70
 bool
 work_queue_build(
     work_queue_ref  wqueue,
     fs_path_ref     root,
-<<<<<<< HEAD
     unsigned int    build_by,
     unsigned int    build_by_min_count
 )
@@ -528,105 +524,7 @@ work_queue_build(
         default: {
             svl_printf(verbosity_error, "Unknown work queue build algorithm %u", build_by);
             is_okay = false;
-=======
-    unsigned int    count_min
-)
-{
-    bool    is_okay = true;
 
-    if ( wqueue->path_count < count_min ) {
-        // Add the root path to the queue:
-        if ( __work_queue_push(wqueue, root, true) ) {
-            // Continue running while the queue is too small:
-            while ( is_okay && wqueue->path_count && (wqueue->path_count < count_min) ) {
-                // We're going to expand each queued path into sub-paths by doing a non-recursive
-                // walk of the items therein.  Once we dequeue a path _we_ own it and must
-                // dispose of it:
-                fs_path_ref alt_root = __work_queue_dequeue(wqueue);
-                const char* fts_paths[2] = { fs_path_get_cstring(alt_root), NULL };
-                FTS         *fts_ptr = fts_open((char* const*)fts_paths, FTS_NOCHDIR | FTS_PHYSICAL, NULL);
-                
-                if ( fts_ptr ) {
-                    // Great, we got a handle.  Start walking:
-                    FTSENT          *fts_item = fts_read(fts_ptr);
-                    
-                    // First item should be the root directory itself:
-                    if ( fts_item ) {
-                        uint64_t        size;
-                        usage_record_t  *r;
-                        
-                        // At this point we account for the directory itself (bytes and inodes):
-                        switch ( wqueue->usage_parameter ) {
-                            case usage_parameter_actual:
-                                size = fts_item->fts_statp->st_blocks * ST_NBLOCKSIZE;
-                                break;
-                            case usage_parameter_size:
-                                size = fts_item->fts_statp->st_size;
-                                break;
-                            case usage_parameter_blocks:
-                                size = fts_item->fts_statp->st_blocks;
-                                break;
-                        }
-                        r = usage_tree_lookup_or_add(wqueue->by_uid, fts_item->fts_statp->st_uid);
-                        if ( r ) r->byte_usage += size, r->inode_usage++;
-                        r = usage_tree_lookup_or_add(wqueue->by_gid, fts_item->fts_statp->st_gid);
-                        if ( r ) r->byte_usage += size, r->inode_usage++;
-                        
-                        while ( is_okay && (fts_item = fts_read(fts_ptr)) ) {
-                            // Add item metadata to the usage trees:
-                            struct stat     *finfo = fts_item->fts_statp;
-                        
-                            switch ( fts_item->fts_info ) {
-                            
-                                case FTS_D: {
-                                    // Do not descend into this directory, just add it to the work queue:
-                                    fs_path_ref new_dir = fs_path_alloc_with_characters(fts_item->fts_pathlen, fts_item->fts_path, fts_item->fts_pathlen);
-                                    if ( new_dir ) {
-                                        svl_printf(verbosity_debug, "%s", fts_item->fts_path);
-                                        if ( __work_queue_push(wqueue, new_dir, false) ) {
-                                            fts_set(fts_ptr, fts_item, FTS_SKIP);
-                                        } else {
-                                            svl_printf(verbosity_warning, "Unable to push path '%s' to work queue during fts scan", fts_item->fts_path);
-                                            is_okay = false;
-                                        }
-                                    } else {
-                                        svl_printf(verbosity_warning, "Unable to allocate path '%s' during fts scan", fts_item->fts_path);
-                                        is_okay = false;
-                                    }
-                                    break;
-                                }
-                                case FTS_DEFAULT:
-                                case FTS_F:
-                                case FTS_SL:
-                                case FTS_SLNONE: {
-                                    switch ( wqueue->usage_parameter ) {
-                                        case usage_parameter_actual:
-                                            size = finfo->st_blocks * ST_NBLOCKSIZE;
-                                            break;
-                                        case usage_parameter_size:
-                                            size = finfo->st_size;
-                                            break;
-                                        case usage_parameter_blocks:
-                                            size = finfo->st_blocks;
-                                            break;
-                                    }
-                                    r = usage_tree_lookup_or_add(wqueue->by_uid, finfo->st_uid);
-                                    if ( r ) r->byte_usage += size, r->inode_usage++;
-                                    r = usage_tree_lookup_or_add(wqueue->by_gid, finfo->st_gid);
-                                    if ( r ) r->byte_usage += size, r->inode_usage++;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    fts_close(fts_ptr);
-                } else {
-                    svl_printf(verbosity_warning, "Unable to open %s for fts scan (errno = %d)", fts_paths[0], errno);
-                    is_okay = false;
-                }
-                fs_path_free(alt_root);
-            }
->>>>>>> 374ad3da638feb4cfd5fe549b1095b61767b1d70
         }
     }
     return is_okay;
@@ -720,7 +618,6 @@ work_queue_complete(
 
 //
 
-<<<<<<< HEAD
 unsigned int
 __work_queue_random_idx(
     unsigned int    idx_max
@@ -777,8 +674,6 @@ work_queue_randomize(
 
 //
 
-=======
->>>>>>> 374ad3da638feb4cfd5fe549b1095b61767b1d70
 sbb_ref
 work_queue_serialize(
     work_queue_ref  wqueue
@@ -830,7 +725,6 @@ work_queue_serialize_range(
 
 //
 
-<<<<<<< HEAD
 sbb_ref
 work_queue_serialize_index_and_stride(
     work_queue_ref  wqueue,
@@ -911,8 +805,6 @@ work_queue_to_csv_string(
 
 //
 
-=======
->>>>>>> 374ad3da638feb4cfd5fe549b1095b61767b1d70
 void
 work_queue_summary(
     work_queue_ref  wqueue
