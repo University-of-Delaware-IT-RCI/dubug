@@ -1,0 +1,21 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [1.0.0] - 2024-03-18
+
+### Added
+
+- MPI parallelism
+    - Distribution of work logs
+    - Reduction of results back to root rank
+
+### Changed
+
+- Refactored directory hierarchy scanning to use Linux `fts` rather than `nftw`.
+- Implementation of work queue API to enumerate and scan directories.
