@@ -39,6 +39,10 @@ usage -- [du] [b]y [u]ser and [g]roup
                                      st_size     nominal size (possibly sparse)
                                      st_blocks   block count
 
+  <path> can be an absolute or relative file system path to a directory or
+  file (not very interesting), and for each <path> the traversal is repeated
+  (rather than aggregating the sum over the paths).
+
 ```
 
 ## Parallel scanning
