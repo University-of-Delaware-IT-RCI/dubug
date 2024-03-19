@@ -35,6 +35,7 @@ struct option cli_options[] = {
         { "version",            no_argument,        NULL,   'V' },
         { "quiet",              no_argument,        NULL,   'q' },
         { "verbose",            no_argument,        NULL,   'v' },
+        { "show-timestamps",    no_argument,        NULL,   't' },
         { "human-readable",     no_argument,        NULL,   'H' },
         { "numeric",            no_argument,        NULL,   'n' },\
         { "unsorted",           no_argument,        NULL,   'S' },
@@ -46,7 +47,7 @@ struct option cli_options[] = {
 #endif
         { NULL,                 0,                  NULL,    0  }
     };
-const char *cli_options_str = "hVqvHnSP:"
+const char *cli_options_str = "hVqvtHnSP:"
 #ifdef HAVE_MPI
                 "Q:d:w"
 #endif
@@ -221,6 +222,7 @@ usage(
             "    --version/-V                 show the program version\n"
             "    --verbose/-v                 increase amount of output shown during execution\n"
             "    --quiet/-q                   decrease amount of output shown during execution\n"
+            "    --show-timestamps/-t         prefix logging output with the current timestamp\n"
             "    --human-readable/-H          display usage with units, not as bytes\n"
             "    --numeric/-n                 do not resolve numeric uid/gid to names\n"
             "    --unsorted/-S                do not sort by byte usage before summarizing\n"
@@ -369,6 +371,10 @@ main(
 
             case 'v':
                 svl_inc_verbosity();
+                break;
+            
+            case 't':
+                svl_set_show_timestamps(true);
                 break;
 
             case 'H':

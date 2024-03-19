@@ -25,6 +25,9 @@ void svl_set_verbosity(int verbosity);
 void svl_inc_verbosity();
 void svl_dec_verbosity();
 
+bool svl_get_show_timestamps();
+void svl_set_show_timestamps(bool should_show_timestamps);
+
 void svl_printf(int verbosity, const char *__restrict __format, ...);
 
 #endif /* __SIMPLE_VERBOSE_LOGGING_H__ */

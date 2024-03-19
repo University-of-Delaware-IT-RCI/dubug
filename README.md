@@ -30,6 +30,7 @@ usage -- [du] [b]y [u]ser and [g]roup
     --version/-V                 show the program version
     --verbose/-v                 increase amount of output shown during execution
     --quiet/-q                   decrease amount of output shown during execution
+    --show-timestamps/-t         prefix logging output with the current timestamp
     --human-readable/-H          display usage with units, not as bytes
     --numeric/-n                 do not resolve numeric uid/gid to names
     --unsorted/-S                do not sort by byte usage before summarizing

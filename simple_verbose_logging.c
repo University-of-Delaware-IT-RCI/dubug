@@ -19,6 +19,7 @@ static const char* svl_verbosity_string[] = {
 //
 
 static int svl_verbosity_level = verbosity_error;
+static bool svl_should_show_timestamps = false;
 
 //
 
@@ -70,6 +71,24 @@ svl_dec_verbosity()
 
 //
 
+bool
+svl_get_show_timestamps()
+{
+    return svl_should_show_timestamps;
+}
+
+//
+
+void
+svl_set_show_timestamps(
+    bool    should_show_timestamps
+)
+{
+    svl_should_show_timestamps = should_show_timestamps;
+}
+
+//
+
 #ifdef HAVE_MPI
 
 # include "mpi.h"
@@ -103,6 +122,18 @@ svl_printf(
     if ( (verbosity == verbosity_critical) || (verbosity <= svl_verbosity_level) ) {
         va_list     vargs;
         int         format_len = strlen(__format);
+        
+        if ( svl_should_show_timestamps ) {
+            char        timestamp_str[24];
+            time_t      now;
+            struct tm   *now_tm;
+            size_t      n_char;
+
+            now = time(NULL);
+            now_tm = localtime(&now);
+            n_char = strftime(timestamp_str, sizeof(timestamp_str), "%Y%d%m %H:%M:%S%z", now_tm);
+            fprintf(stderr, "[%s]", timestamp_str);
+        }
         
         va_start(vargs, __format);
 #ifdef HAVE_MPI
